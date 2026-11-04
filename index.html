@@ -27,16 +27,17 @@ h1{font-size:22px;margin:6px 0 2px;}
 #rp-arui.rp-on { display:block; }
 #rp-reticle { position:absolute; left:50%; top:50%; width:26px; height:26px; margin:-13px 0 0 -13px; border:2px solid #3da9fc; border-radius:50%; opacity:.9; }
 #rp-reticle.rp-hit { border-color:#35c48d; box-shadow:0 0 0 4px rgba(53,196,141,.25); }
-#rp-arbar { position:absolute; left:0; right:0; bottom:0; padding:12px; display:flex; gap:8px; justify-content:center; pointer-events:auto; flex-wrap:wrap; }
+#rp-arbottom { position:absolute; left:0; right:0; bottom:0; display:flex; flex-direction:column; gap:8px; padding:10px 12px calc(12px + env(safe-area-inset-bottom)); background:linear-gradient(rgba(10,14,18,0), rgba(10,14,18,.7)); pointer-events:auto; }
+#rp-arbar { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
 #rp-arbar button { background:#3da9fc; color:#06121c; border:0; border-radius:8px; padding:12px 14px; font-size:14px; font-weight:600; }
 #rp-arbar button.rp-secondary { background:#26303b; color:#e8edf2; }
 #rp-arbar button:disabled { opacity:.45; }
-#rp-arstatus { position:absolute; left:0; right:0; top:0; padding:10px; text-align:center; font-size:14px; color:#fff; background:rgba(10,14,18,.55); pointer-events:auto; font-family:system-ui,sans-serif; }
+#rp-arstatus { position:absolute; left:0; right:0; top:0; padding:calc(10px + env(safe-area-inset-top)) 10px 10px; text-align:center; font-size:14px; color:#fff; background:rgba(10,14,18,.55); pointer-events:auto; font-family:system-ui,sans-serif; }
 .rp-root textarea { background:#fff; color:#1c2732; border:1px solid rgba(20,30,40,0.25); border-radius:6px; padding:8px 10px; font-size:14px; font-family:ui-monospace,monospace; }
 .rp-root input[type=number], .rp-root input[type=text] { background:#fff; color:#1c2732; border:1px solid rgba(20,30,40,0.25); border-radius:6px; padding:8px 10px; font-size:14px; }
 .rp-root label { font-size:13px; color:#4d5a68; }
 .rp-root a.rp-abtn { display:inline-block; background:#3da9fc; color:#06121c; border-radius:8px; padding:12px 16px; font-size:15px; font-weight:600; text-decoration:none; }
-#rp-armodes { position:absolute; left:0; right:0; bottom:64px; padding:0 12px; display:flex; gap:8px; justify-content:center; pointer-events:auto; }
+#rp-armodes { display:flex; gap:8px; justify-content:center; }
 #rp-armodes .rp-mode { background:#26303b; color:#e8edf2; border:0; border-radius:8px; padding:8px 14px; font-size:13px; font-weight:600; }
 #rp-armodes .rp-mode.rp-on-mode { background:#3da9fc; color:#06121c; }
 
@@ -119,17 +120,19 @@ D 0.9 2.0
       arui.innerHTML = `
         <div id="rp-arstatus">Point at the floor and move the phone slowly to map the room...</div>
         <div id="rp-reticle"></div>
-        <div id="rp-armodes">
-          <button id="rp-modeCorner" class="rp-mode rp-on-mode">Corner</button>
-          <button id="rp-modeWindow" class="rp-mode rp-secondary">Window</button>
-          <button id="rp-modeDoor" class="rp-mode rp-secondary">Door</button>
-        </div>
-        <div id="rp-arbar">
-          <button id="rp-addCorner" disabled>Add point</button>
-          <button id="rp-undoCorner" class="rp-secondary">Undo</button>
-          <button id="rp-closeRoom" class="rp-secondary" disabled>Close room</button>
-          <button id="rp-newRoom" class="rp-secondary" disabled>New room</button>
-          <button id="rp-finishFloor" class="rp-secondary" disabled>Finish &amp; view plan</button>
+        <div id="rp-arbottom">
+          <div id="rp-armodes">
+            <button id="rp-modeCorner" class="rp-mode rp-on-mode">Corner</button>
+            <button id="rp-modeWindow" class="rp-mode rp-secondary">Window</button>
+            <button id="rp-modeDoor" class="rp-mode rp-secondary">Door</button>
+          </div>
+          <div id="rp-arbar">
+            <button id="rp-addCorner" disabled>Add point</button>
+            <button id="rp-undoCorner" class="rp-secondary">Undo</button>
+            <button id="rp-closeRoom" class="rp-secondary" disabled>Close room</button>
+            <button id="rp-newRoom" class="rp-secondary" disabled>New room</button>
+            <button id="rp-finishFloor" class="rp-secondary" disabled>Finish &amp; view plan</button>
+          </div>
         </div>`;
       document.body.appendChild(arui);
     }
@@ -282,6 +285,9 @@ D 0.9 2.0
     function onSessionEnd() {
       state.session = null; state.hitSource = null;
       if (arui) arui.classList.remove('rp-on');
+      document.documentElement.style.background = '';
+      document.body.style.background = '';
+      root.style.display = '';
       if (state.rooms.length) { locateOpenings(); showPlan(); window.scrollTo(0, 0); }
     }
 
@@ -412,6 +418,10 @@ D 0.9 2.0
         state.rooms = []; state.cur = null; state.scale = 1.0; state.source = 'ar'; state.mode = 'corner'; state.pending = []; state.floorY = null;
         setMode('corner');
         if (arui) arui.classList.add('rp-on');
+        // let the camera passthrough show: page background must be transparent and non-overlay content hidden
+        document.documentElement.style.background = 'transparent';
+        document.body.style.background = 'transparent';
+        root.style.display = 'none';
         session.addEventListener('end', onSessionEnd);
         Promise.all([
           session.requestReferenceSpace('local-floor').catch(() => session.requestReferenceSpace('local')),
