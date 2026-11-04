@@ -27,6 +27,7 @@ h1{font-size:22px;margin:6px 0 2px;}
 #rp-arui.rp-on { display:block; }
 #rp-reticle { position:absolute; left:50%; top:50%; width:26px; height:26px; margin:-13px 0 0 -13px; border:2px solid #3da9fc; border-radius:50%; opacity:.9; }
 #rp-reticle.rp-hit { border-color:#35c48d; box-shadow:0 0 0 4px rgba(53,196,141,.25); }
+#rp-reticle.rp-hit.rp-hold { border-color:#e8b23a; box-shadow:0 0 0 4px rgba(232,178,58,.25); }
 #rp-ardiag { position:absolute; left:12px; right:12px; top:calc(56px + env(safe-area-inset-top)); padding:6px 8px; text-align:center; font-size:11px; color:#fff; background:rgba(10,14,18,.78); border-radius:6px; font-family:ui-monospace,monospace; pointer-events:none; }
 #rp-arbottom { position:absolute; left:0; right:0; bottom:0; display:flex; flex-direction:column; gap:8px; padding:10px 12px calc(12px + env(safe-area-inset-bottom)); background:linear-gradient(rgba(10,14,18,0), rgba(10,14,18,.7)); pointer-events:auto; }
 #rp-arbar { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
@@ -52,7 +53,7 @@ const inFrame = window.self !== window.top;
 
     document.getElementById('root').innerHTML = `<h1>Room plan camera</h1><p class="sub">Phone camera to floor plan. Plans stay on this device.</p>
       <div class="rp-card" id="rp-startCard">
-        <p class="rp-muted" style="font-size:11px;margin:0 0 6px">Build v6 - 4 Nov</p>
+        <p class="rp-muted" style="font-size:11px;margin:0 0 6px">Build v7 - 4 Nov</p>
         <div class="rp-row" style="margin-bottom:10px">
           <button id="rp-startAr">Start camera measuring</button>
         </div>
@@ -152,7 +153,7 @@ D 0.9 2.0
       },
     };
     const state = {
-      session: null, refSpace: null, hitSource: null,
+      session: null, refSpace: null, hitSrcPlane: null, hitSrcPoint: null, lockKind: '',
       rooms: [], cur: null, scale: 1.0, source: 'ar', floorY: null,
       mode: 'corner', pending: [],
     };
@@ -184,6 +185,14 @@ D 0.9 2.0
 
     let latestHit = null;
     let latestViewer = null;
+    // ARCore hits flicker frame to frame while tracking settles. We hold the last measured
+    // surface point for a moment, but only while the phone has barely moved: the held point
+    // is a fixed world position from a frame where tracking really measured it, so a short
+    // hold never invents geometry - and moving the phone drops it at once.
+    let lastGoodHit = null;
+    const HOLD_MS = 400, HOLD_DIST = 0.04, HOLD_COS = Math.cos(8 * Math.PI / 180);
+    // forward (-z) vector of a quaternion, for aim-change checks
+    function fwdOf(q) { return [-2 * (q.w * q.y + q.x * q.z), 2 * (q.w * q.x - q.y * q.z), 2 * (q.x * q.x + q.y * q.y) - 1]; }
 
     function wrap360(d) { return ((d % 360) + 360) % 360; }
     // yaw of a plan-space vector around the vertical axis (right-handed, y up)
@@ -251,17 +260,44 @@ D 0.9 2.0
         state.gl.clearColor(0, 0, 0, 0);
         state.gl.clear(state.gl.COLOR_BUFFER_BIT);
       }
+      let viewerFresh = false;
       if (state.refSpace) {
         const vp = frame.getViewerPose(state.refSpace);
-        if (vp) latestViewer = vp.transform;
+        if (vp) { latestViewer = vp.transform; viewerFresh = true; }
       }
-      if (state.hitSource && state.refSpace) {
-        const results = frame.getHitTestResults(state.hitSource);
+      // plane hits are the most stable; feature-point hits often appear sooner - prefer planes, fall back to points
+      let freshHit = null, lockKind = '';
+      if (state.hitSrcPlane && state.refSpace) {
+        const results = frame.getHitTestResults(state.hitSrcPlane);
         if (results.length) {
           const pose = results[0].getPose(state.refSpace);
-          if (pose) latestHit = pose.transform.position;
+          if (pose) { freshHit = pose.transform.position; lockKind = 'plane'; }
         }
       }
+      if (!freshHit && state.hitSrcPoint && state.refSpace) {
+        const results2 = frame.getHitTestResults(state.hitSrcPoint);
+        if (results2.length) {
+          const pose2 = results2[0].getPose(state.refSpace);
+          if (pose2) { freshHit = pose2.transform.position; lockKind = 'point'; }
+        }
+      }
+      const now = performance.now();
+      if (freshHit) {
+        latestHit = freshHit;
+        const f = latestViewer ? fwdOf(latestViewer.orientation) : [0, 0, -1];
+        lastGoodHit = { x: freshHit.x, y: freshHit.y, z: freshHit.z,
+          vx: latestViewer ? latestViewer.position.x : 0, vy: latestViewer ? latestViewer.position.y : 0, vz: latestViewer ? latestViewer.position.z : 0,
+          fx: f[0], fy: f[1], fz: f[2], t: now, kind: lockKind };
+        state.lockKind = lockKind;
+      } else if (lastGoodHit && viewerFresh && (now - lastGoodHit.t) <= HOLD_MS) {
+        const dx = latestViewer.position.x - lastGoodHit.vx, dy = latestViewer.position.y - lastGoodHit.vy, dz = latestViewer.position.z - lastGoodHit.vz;
+        const f2 = fwdOf(latestViewer.orientation);
+        const dot = f2[0] * lastGoodHit.fx + f2[1] * lastGoodHit.fy + f2[2] * lastGoodHit.fz;
+        if (Math.hypot(dx, dy, dz) <= HOLD_DIST && dot >= HOLD_COS) {
+          latestHit = { x: lastGoodHit.x, y: lastGoodHit.y, z: lastGoodHit.z };
+          state.lockKind = 'hold';
+        } else { state.lockKind = ''; }
+      } else { state.lockKind = ''; }
       } catch (e) {
         if (!frameErrorShown) {
           frameErrorShown = true;
@@ -270,16 +306,17 @@ D 0.9 2.0
       }
       if (state.frames % 20 === 1) {
         const dg = $('rp-ardiag');
-        if (dg) dg.textContent = 'diag: frame ' + state.frames + ' | layer ' + (session.renderState && session.renderState.baseLayer ? 'on' : 'OFF') + ' | blend ' + (session.renderState && session.renderState.environmentBlendMode || '?') + ' | hit-src ' + (state.hitSource ? 'on' : 'OFF') + ' | feats ' + ((session.enabledFeatures || []).join(',') || '?') + ' | v6';
+        if (dg) dg.textContent = 'diag: frame ' + state.frames + ' | layer ' + (session.renderState && session.renderState.baseLayer ? 'on' : 'OFF') + ' | lock ' + (state.lockKind || '-') + ' | srcs p:' + (state.hitSrcPlane ? 'on' : 'OFF') + ' pt:' + (state.hitSrcPoint ? 'on' : 'OFF') + ' | v7';
       }
       const r = $('rp-reticle');
       if (!r) return;
       if (latestHit) {
         r.classList.add('rp-hit');
+        r.classList.toggle('rp-hold', state.lockKind === 'hold');
         $('rp-addCorner').disabled = false;
         $('rp-arstatus').textContent = statusText();
       } else {
-        r.classList.remove('rp-hit');
+        r.classList.remove('rp-hit'); r.classList.remove('rp-hold');
         $('rp-addCorner').disabled = true;
         if (state.mode === 'window' || state.mode === 'door') {
           $('rp-arstatus').textContent = statusText() + ' - no surface at the circle yet. Glass and blank walls can be hard to scan; keep moving the phone slowly. Nothing is measured until the circle locks on.';
@@ -305,7 +342,7 @@ D 0.9 2.0
     }
 
     function onSessionEnd() {
-      state.session = null; state.hitSource = null;
+      state.session = null; state.hitSrcPlane = null; state.hitSrcPoint = null; state.lockKind = ''; lastGoodHit = null; latestHit = null;
       if (arui) arui.classList.remove('rp-on');
       if (state.diagWatchdog) { clearTimeout(state.diagWatchdog); state.diagWatchdog = null; }
       document.documentElement.style.background = '';
@@ -456,11 +493,11 @@ D 0.9 2.0
         if (arui) arui.classList.add('rp-on');
         // diagnostics must be informative even if the XR frame loop never fires
         const dg0 = $('rp-ardiag');
-        if (dg0) dg0.textContent = 'diag: session open, waiting for first frame | layer on | v6';
+        if (dg0) dg0.textContent = 'diag: session open, waiting for first frame | layer on | v7';
         state.diagWatchdog = setTimeout(() => {
           if (!state.frames) {
             const dg = $('rp-ardiag');
-            if (dg) dg.textContent = 'diag: NO FRAMES 3s after start - Chrome is not running the AR frame loop | layer on | hit-src ' + (state.hitSource ? 'on' : 'OFF') + ' | feats ' + ((session.enabledFeatures || []).join(',') || '?') + ' | v6';
+            if (dg) dg.textContent = 'diag: no frames 3s after start - the AR frame loop is not running | layer on | srcs p:' + (state.hitSrcPlane ? 'on' : 'OFF') + ' pt:' + (state.hitSrcPoint ? 'on' : 'OFF') + ' | feats ' + ((session.enabledFeatures || []).join(',') || '?') + ' | v7';
           }
         }, 3000);
         // let the camera passthrough show: page background must be transparent and non-overlay content hidden
@@ -468,15 +505,19 @@ D 0.9 2.0
         document.body.style.background = 'transparent';
         root.style.display = 'none';
         session.addEventListener('end', onSessionEnd);
+        lastGoodHit = null; state.lockKind = '';
+        // start the frame loop immediately; reference spaces and hit-test sources attach in parallel
+        session.requestAnimationFrame(onFrame);
         Promise.all([
           session.requestReferenceSpace('local-floor').catch(() => session.requestReferenceSpace('local')),
           session.requestReferenceSpace('viewer'),
         ]).then((spaces) => {
           state.refSpace = spaces[0];
-          return session.requestHitTestSource({ space: spaces[1] });
-        }).then((source) => {
-          state.hitSource = source;
-          session.requestAnimationFrame(onFrame);
+          const viewerSpace = spaces[1];
+          // plane hits are stable; point hits often appear sooner. Request both; either may be unsupported.
+          session.requestHitTestSource({ space: viewerSpace, entityTypes: ['plane'] }).then((src) => { state.hitSrcPlane = src; })
+            .catch(() => { session.requestHitTestSource({ space: viewerSpace }).then((src2) => { state.hitSrcPlane = src2; }).catch(() => {}); });
+          session.requestHitTestSource({ space: viewerSpace, entityTypes: ['point'] }).then((src3) => { state.hitSrcPoint = src3; }).catch(() => {});
         }).catch((e) => { $('rp-arstatus').textContent = 'AR error: ' + e.message; });
       }).catch((e) => {
         $('rp-supportMsg').textContent = 'Could not start AR: ' + e.message + ' Use tape-measure mode below.';
