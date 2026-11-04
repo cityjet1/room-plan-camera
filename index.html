@@ -27,6 +27,7 @@ h1{font-size:22px;margin:6px 0 2px;}
 #rp-arui.rp-on { display:block; }
 #rp-reticle { position:absolute; left:50%; top:50%; width:26px; height:26px; margin:-13px 0 0 -13px; border:2px solid #3da9fc; border-radius:50%; opacity:.9; }
 #rp-reticle.rp-hit { border-color:#35c48d; box-shadow:0 0 0 4px rgba(53,196,141,.25); }
+#rp-ardiag { position:absolute; left:0; right:0; bottom:150px; padding:2px 10px; text-align:center; font-size:10px; color:rgba(255,255,255,.65); font-family:ui-monospace,monospace; pointer-events:none; text-shadow:0 1px 2px #000; }
 #rp-arbottom { position:absolute; left:0; right:0; bottom:0; display:flex; flex-direction:column; gap:8px; padding:10px 12px calc(12px + env(safe-area-inset-bottom)); background:linear-gradient(rgba(10,14,18,0), rgba(10,14,18,.7)); pointer-events:auto; }
 #rp-arbar { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
 #rp-arbar button { background:#3da9fc; color:#06121c; border:0; border-radius:8px; padding:12px 14px; font-size:14px; font-weight:600; }
@@ -51,6 +52,7 @@ const inFrame = window.self !== window.top;
 
     document.getElementById('root').innerHTML = `<h1>Room plan camera</h1><p class="sub">Phone camera to floor plan. Plans stay on this device.</p>
       <div class="rp-card" id="rp-startCard">
+        <p class="rp-muted" style="font-size:11px;margin:0 0 6px">Build v5 - 4 Nov 08:15</p>
         <div class="rp-row" style="margin-bottom:10px">
           <button id="rp-startAr">Start camera measuring</button>
         </div>
@@ -120,6 +122,7 @@ D 0.9 2.0
       arui.innerHTML = `
         <div id="rp-arstatus">Point at the floor and move the phone slowly to map the room...</div>
         <div id="rp-reticle"></div>
+        <div id="rp-ardiag"></div>
         <div id="rp-arbottom">
           <div id="rp-armodes">
             <button id="rp-modeCorner" class="rp-mode rp-on-mode">Corner</button>
@@ -240,7 +243,14 @@ D 0.9 2.0
       const session = frame.session;
       session.requestAnimationFrame(onFrame);
       latestHit = null;
+      state.frames = (state.frames || 0) + 1;
       try {
+      const layer = session.renderState && session.renderState.baseLayer;
+      if (state.gl && layer) {
+        state.gl.bindFramebuffer(state.gl.FRAMEBUFFER, layer.framebuffer);
+        state.gl.clearColor(0, 0, 0, 0);
+        state.gl.clear(state.gl.COLOR_BUFFER_BIT);
+      }
       if (state.refSpace) {
         const vp = frame.getViewerPose(state.refSpace);
         if (vp) latestViewer = vp.transform;
@@ -257,6 +267,10 @@ D 0.9 2.0
           frameErrorShown = true;
           $('rp-arstatus').textContent = 'AR frame error: ' + (e && e.message ? e.message : e) + ' - try closing and restarting the camera, or use tape-measure mode.';
         }
+      }
+      if (state.frames % 20 === 1) {
+        const dg = $('rp-ardiag');
+        if (dg) dg.textContent = 'diag: frame ' + state.frames + ' | layer ' + (session.renderState && session.renderState.baseLayer ? 'on' : 'OFF') + ' | blend ' + (session.renderState && session.renderState.environmentBlendMode || '?') + ' | hit-src ' + (state.hitSource ? 'on' : 'OFF') + ' | feats ' + ((session.enabledFeatures || []).join(',') || '?') + ' | v5';
       }
       const r = $('rp-reticle');
       if (!r) return;
@@ -428,9 +442,11 @@ D 0.9 2.0
         // WebXR fires no animation frames without a WebGL base layer, which also leaves the camera view black - create one even though we draw nothing in 3D
         try {
           const glCanvas = document.createElement('canvas');
-          const gl = glCanvas.getContext('webgl', { xrCompatible: true });
+          const gl = glCanvas.getContext('webgl', { xrCompatible: true, alpha: true });
           if (!gl) throw new Error('WebGL is not available on this browser');
+          state.gl = gl;
           session.updateRenderState({ baseLayer: new (window).XRWebGLLayer(session, gl) });
+          try { session.updateRenderState({ environmentBlendMode: 'alpha-blend' }); } catch (e2) { /* hint only */ }
         } catch (e) {
           $('rp-supportMsg').textContent = 'Could not start AR graphics: ' + (e && e.message ? e.message : e) + ' Use tape-measure mode below.';
           session.end().catch(() => {});
