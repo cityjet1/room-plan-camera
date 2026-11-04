@@ -53,7 +53,7 @@ const inFrame = window.self !== window.top;
 
     document.getElementById('root').innerHTML = `<h1>Room plan camera</h1><p class="sub">Phone camera to floor plan. Plans stay on this device.</p>
       <div class="rp-card" id="rp-startCard">
-        <p class="rp-muted" style="font-size:11px;margin:0 0 6px">Build v7 - 4 Nov</p>
+        <p class="rp-muted" style="font-size:11px;margin:0 0 6px">Build v8 - 4 Nov</p>
         <div class="rp-row" style="margin-bottom:10px">
           <button id="rp-startAr">Start camera measuring</button>
         </div>
@@ -64,7 +64,7 @@ const inFrame = window.self !== window.top;
         <b>How it works</b>
         <p class="rp-muted">1. Stand in the room and point the camera at the floor.<br>
         2. Move the phone slowly so it can map the room (good light and a floor with some pattern help).<br>
-        3. In Corner mode, aim the circle at each corner where wall meets floor, and tap "Add point".<br>
+        3. In Corner mode, tap each corner on the screen where wall meets floor. You can also aim the circle and tap "Add point".<br>
         4. Switch to Window or Door mode to mark openings. Window: tap the two bottom corners of the glazing, then the top edge (the bottom corners set the sill height). Door: tap the two jambs at floor level, then the top edge. The app does not recognise them by itself - you mark them, it measures. Window facing comes from the phone compass (magnetic north) - approximate.<br>
         5. Work around the room, then tap "Close room". Repeat for each room on the floor.<br>
         6. Finish to see the 2D plan with wall lengths, window and door sizes, and areas. Calibrate one wall with a tape for best accuracy, then export.</p>
@@ -121,7 +121,7 @@ D 0.9 2.0
       arui = document.createElement('div');
       arui.id = 'rp-arui';
       arui.innerHTML = `
-        <div id="rp-arstatus">Point at the floor and move the phone slowly to map the room...</div>
+        <div id="rp-arstatus">Move the phone slowly to map the room, then tap each floor corner on the screen to place it...</div>
         <div id="rp-reticle"></div>
         <div id="rp-ardiag"></div>
         <div id="rp-arbottom">
@@ -193,6 +193,21 @@ D 0.9 2.0
     const HOLD_MS = 400, HOLD_DIST = 0.04, HOLD_COS = Math.cos(8 * Math.PI / 180);
     // forward (-z) vector of a quaternion, for aim-change checks
     function fwdOf(q) { return [-2 * (q.w * q.y + q.x * q.z), 2 * (q.w * q.x - q.y * q.z), 2 * (q.x * q.x + q.y * q.y) - 1]; }
+    // tap-to-place: a tap on empty overlay space becomes an XR select event whose ray starts at the
+    // TAP position, not screen centre - a corner is captured by tapping it directly on the screen.
+    let tapPlaneSrc = null, tapPointSrc = null, tapWait = null;
+    function onXRSelect(ev) {
+      const isrc = ev.inputSource;
+      if (!isrc) return;
+      tapWait = { t0: performance.now() };
+      const profile = isrc.profiles && isrc.profiles[0];
+      if (!tapPlaneSrc && !tapPointSrc && profile && state.session) {
+        state.session.requestHitTestSourceForTransientInput({ profile: profile, entityTypes: ['plane'] })
+          .then((s5) => { tapPlaneSrc = s5; }).catch(() => {});
+        state.session.requestHitTestSourceForTransientInput({ profile: profile, entityTypes: ['point'] })
+          .then((s6) => { tapPointSrc = s6; }).catch(() => {});
+      }
+    }
 
     function wrap360(d) { return ((d % 360) + 360) % 360; }
     // yaw of a plan-space vector around the vertical axis (right-handed, y up)
@@ -248,7 +263,9 @@ D 0.9 2.0
     }
 
     let frameErrorShown = false;
+    let statusHeld = false;
     function onFrame(_time, frame) {
+      statusHeld = false;
       const session = frame.session;
       session.requestAnimationFrame(onFrame);
       latestHit = null;
@@ -298,6 +315,27 @@ D 0.9 2.0
           state.lockKind = 'hold';
         } else { state.lockKind = ''; }
       } else { state.lockKind = ''; }
+      if (tapWait && state.refSpace && (tapPlaneSrc || tapPointSrc)) {
+        let tapHit = null, tapKind = '';
+        if (tapPlaneSrc) {
+          const tr = frame.getHitTestResultsForTransientInput(tapPlaneSrc);
+          if (tr.length && tr[0].results.length) { const tp = tr[0].results[0].getPose(state.refSpace); if (tp) { tapHit = tp.transform.position; tapKind = 'plane'; } }
+        }
+        if (!tapHit && tapPointSrc) {
+          const tr2 = frame.getHitTestResultsForTransientInput(tapPointSrc);
+          if (tr2.length && tr2[0].results.length) { const tp2 = tr2[0].results[0].getPose(state.refSpace); if (tp2) { tapHit = tp2.transform.position; tapKind = 'point'; } }
+        }
+        if (tapHit) {
+          state.tapKind = tapKind;
+          capturePoint(tapHit);
+          tapWait = null;
+          statusHeld = true;
+        } else if (performance.now() - tapWait.t0 > 700) {
+          $('rp-arstatus').textContent = 'No surface found at that tap point yet. Keep moving the phone slowly so it can map the floor, then tap the corner again.';
+          tapWait = null;
+          statusHeld = true;
+        }
+      }
       } catch (e) {
         if (!frameErrorShown) {
           frameErrorShown = true;
@@ -306,7 +344,7 @@ D 0.9 2.0
       }
       if (state.frames % 20 === 1) {
         const dg = $('rp-ardiag');
-        if (dg) dg.textContent = 'diag: frame ' + state.frames + ' | layer ' + (session.renderState && session.renderState.baseLayer ? 'on' : 'OFF') + ' | lock ' + (state.lockKind || '-') + ' | srcs p:' + (state.hitSrcPlane ? 'on' : 'OFF') + ' pt:' + (state.hitSrcPoint ? 'on' : 'OFF') + ' | v7';
+        if (dg) dg.textContent = 'diag: frame ' + state.frames + ' | layer ' + (session.renderState && session.renderState.baseLayer ? 'on' : 'OFF') + ' | lock ' + (state.lockKind || '-') + ' | srcs p:' + (state.hitSrcPlane ? 'on' : 'OFF') + ' pt:' + (state.hitSrcPoint ? 'on' : 'OFF') + ' | tap ' + (state.tapKind || '-') + ' | v8';
       }
       const r = $('rp-reticle');
       if (!r) return;
@@ -314,14 +352,16 @@ D 0.9 2.0
         r.classList.add('rp-hit');
         r.classList.toggle('rp-hold', state.lockKind === 'hold');
         $('rp-addCorner').disabled = false;
-        $('rp-arstatus').textContent = statusText();
+        if (!statusHeld) $('rp-arstatus').textContent = statusText();
       } else {
         r.classList.remove('rp-hit'); r.classList.remove('rp-hold');
         $('rp-addCorner').disabled = true;
-        if (state.mode === 'window' || state.mode === 'door') {
-          $('rp-arstatus').textContent = statusText() + ' - no surface at the circle yet. Glass and blank walls can be hard to scan; keep moving the phone slowly. Nothing is measured until the circle locks on.';
-        } else {
-          $('rp-arstatus').textContent = 'Looking for the surface... move the phone slowly.';
+        if (!statusHeld) {
+          if (state.mode === 'window' || state.mode === 'door') {
+            $('rp-arstatus').textContent = statusText() + ' - no surface at the circle yet. Glass and blank walls can be hard to scan; keep moving the phone slowly. Nothing is measured until the circle locks on.';
+          } else {
+            $('rp-arstatus').textContent = 'Looking for the surface... move the phone slowly.';
+          }
         }
       }
     }
@@ -342,7 +382,7 @@ D 0.9 2.0
     }
 
     function onSessionEnd() {
-      state.session = null; state.hitSrcPlane = null; state.hitSrcPoint = null; state.lockKind = ''; lastGoodHit = null; latestHit = null;
+      state.session = null; state.hitSrcPlane = null; state.hitSrcPoint = null; state.lockKind = ''; lastGoodHit = null; latestHit = null; tapWait = null; tapPlaneSrc = null; tapPointSrc = null;
       if (arui) arui.classList.remove('rp-on');
       if (state.diagWatchdog) { clearTimeout(state.diagWatchdog); state.diagWatchdog = null; }
       document.documentElement.style.background = '';
@@ -493,11 +533,11 @@ D 0.9 2.0
         if (arui) arui.classList.add('rp-on');
         // diagnostics must be informative even if the XR frame loop never fires
         const dg0 = $('rp-ardiag');
-        if (dg0) dg0.textContent = 'diag: session open, waiting for first frame | layer on | v7';
+        if (dg0) dg0.textContent = 'diag: session open, waiting for first frame | layer on | v8';
         state.diagWatchdog = setTimeout(() => {
           if (!state.frames) {
             const dg = $('rp-ardiag');
-            if (dg) dg.textContent = 'diag: no frames 3s after start - the AR frame loop is not running | layer on | srcs p:' + (state.hitSrcPlane ? 'on' : 'OFF') + ' pt:' + (state.hitSrcPoint ? 'on' : 'OFF') + ' | feats ' + ((session.enabledFeatures || []).join(',') || '?') + ' | v7';
+            if (dg) dg.textContent = 'diag: no frames 3s after start - the AR frame loop is not running | layer on | srcs p:' + (state.hitSrcPlane ? 'on' : 'OFF') + ' pt:' + (state.hitSrcPoint ? 'on' : 'OFF') + ' | feats ' + ((session.enabledFeatures || []).join(',') || '?') + ' | v8';
           }
         }, 3000);
         // let the camera passthrough show: page background must be transparent and non-overlay content hidden
@@ -505,7 +545,8 @@ D 0.9 2.0
         document.body.style.background = 'transparent';
         root.style.display = 'none';
         session.addEventListener('end', onSessionEnd);
-        lastGoodHit = null; state.lockKind = '';
+        lastGoodHit = null; state.lockKind = ''; state.tapKind = ''; tapWait = null; tapPlaneSrc = null; tapPointSrc = null;
+        session.addEventListener('select', onXRSelect);
         // start the frame loop immediately; reference spaces and hit-test sources attach in parallel
         session.requestAnimationFrame(onFrame);
         Promise.all([
@@ -525,15 +566,22 @@ D 0.9 2.0
     });
 
     if (!inFrame) {
+      // UI taps must not also place points; empty overlay space stays tappable for placement
+      $('rp-arbottom').addEventListener('beforexrselect', (e) => e.preventDefault());
+      $('rp-arstatus').addEventListener('beforexrselect', (e) => e.preventDefault());
       $('rp-modeCorner').addEventListener('click', () => setMode('corner'));
       $('rp-modeWindow').addEventListener('click', () => setMode('window'));
       $('rp-modeDoor').addEventListener('click', () => setMode('door'));
 
       $('rp-addCorner').addEventListener('click', () => {
-        if (!latestHit) return;
+        capturePoint(latestHit);
+      });
+
+      function capturePoint(capHit) {
+        if (!capHit) return;
         const room = currentRoom();
         if (state.mode === 'window' || state.mode === 'door') {
-          state.pending.push({ x: latestHit.x, y: latestHit.y, z: latestHit.z });
+          state.pending.push({ x: capHit.x, y: capHit.y, z: capHit.z });
           if (state.pending.length >= 3) {
             const a = state.pending[0], b = state.pending[1], top = state.pending[2];
             const width = Math.hypot(b.x - a.x, b.z - a.z);
@@ -572,7 +620,7 @@ D 0.9 2.0
           if ($('rp-arstatus').textContent.indexOf('discarded rather than guessed') === -1) $('rp-arstatus').textContent = statusText();
           return;
         }
-        let x = latestHit.x, z = latestHit.z;
+        let x = capHit.x, z = capHit.z;
         const pts = room.points;
         if (pts.length >= 1) {
           const a = pts[pts.length - 1];
@@ -589,10 +637,10 @@ D 0.9 2.0
             }
           }
         }
-        if (state.floorY === null || latestHit.y < state.floorY) state.floorY = latestHit.y;
+        if (state.floorY === null || capHit.y < state.floorY) state.floorY = capHit.y;
         pts.push([x, z]);
         $('rp-closeRoom').disabled = pts.length < 3;
-      });
+        }
 
       $('rp-undoCorner').addEventListener('click', () => {
         if (state.pending.length) { state.pending.pop(); $('rp-arstatus').textContent = statusText(); return; }
