@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AR viewer test</title>
+<style>
+body{margin:0;background:#f4f1ec;color:#1c2732;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;}
+main{max-width:640px;margin:0 auto;padding:32px 18px;}
+h1{font-size:22px;margin:0 0 8px;}
+p{font-size:15px;line-height:1.55;color:#37444f;}
+a.bigbtn{display:block;text-align:center;background:#3da9fc;color:#06121c;text-decoration:none;font-size:18px;font-weight:700;padding:18px 16px;border-radius:10px;margin:22px 0;}
+.note{font-size:13px;color:#4d5a68;border-top:1px solid #d8d2c8;padding-top:14px;margin-top:20px;}
+</style>
+</head>
+<body>
+<main>
+<h1>AR viewer test</h1>
+<p>This opens Google's own AR viewer and places an astronaut in the room through your camera. Walk around it and check whether it stays fixed in place.</p>
+<a class="bigbtn" href="intent://arvr.google.com/scene-viewer/1.0?file=https://modelviewer.dev/shared-assets/models/Astronaut.glb&amp;mode=ar_preferred&amp;title=Astronaut#Intent;scheme=https;package=com.google.android.googlequicksearchbox;action=android.intent.action.VIEW;S.browser_fallback_url=https://cityjet1.github.io/room-plan-camera/ar-test.html;end;">Open AR viewer</a>
+<p>If nothing opens, or you see a 3D model without camera view, use the "View in your space" option if shown, and tell Instinct exactly what you saw.</p>
+<p class="note">Part of the room-plan camera test. This page collects no data and has no camera code of its own. If the button does nothing, open this page in Chrome and try again.</p>
+</main>
+</body>
+</html>
