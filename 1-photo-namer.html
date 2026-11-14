@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Name each photo, then shoot</title>
+<style>
+:root { --ink:#2b1f1c; --ink2:#6f6460; --line:#e4dcd7; --bg:#fcfaf8; --accent:#2b1f1c; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 system-ui, sans-serif; }
+main { max-width: 640px; margin: 0 auto; padding: 20px 16px 48px; }
+h1 { font-size: 28px; line-height: 1.2; margin: 8px 0 4px; font-weight: 600; }
+h2 { font-size: 19px; margin: 28px 0 8px; font-weight: 600; }
+.sub { color: var(--ink2); margin: 0 0 8px; }
+label { display:block; color: var(--ink2); font-size: 14px; margin-bottom: 6px; }
+input[type=text] { width:100%; font: inherit; padding: 12px; border:1px solid var(--line); border-radius: 8px; background:#fff; color:var(--ink); }
+.chips { display:flex; flex-wrap:wrap; gap:8px; margin: 12px 0; }
+button { font: inherit; min-height: 44px; padding: 8px 14px; border-radius: 8px; border:1px solid var(--line); background:#fff; color:var(--ink); cursor:pointer; }
+button.primary { background: var(--accent); color:#fff; border-color: var(--accent); }
+button.ghost { border-color: transparent; background: transparent; text-decoration: underline; }
+button:disabled { opacity: .4; cursor: default; }
+.hidden { display:none; }
+#note { min-height: 1.5em; color: var(--ink2); margin: 8px 0 0; }
+ul { list-style:none; margin:0; padding:0; }
+li.row { display:grid; grid-template-columns: 72px 1fr; gap: 6px 12px; align-items:center; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.thumb { width:72px; height:72px; object-fit:cover; border-radius:8px; background: var(--line); }
+.meta { min-width:0; } .meta b { display:block; } .meta span { color: var(--ink2); font-size:14px; overflow-wrap:anywhere; }
+.actions { grid-column: 1 / -1; display:flex; flex-wrap:wrap; gap:8px; }
+.box { background:#f4efec; border-radius:10px; padding:14px 16px; margin: 20px 0; font-size:15px; }
+.box b { display:block; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Name each photo, then shoot</h1>
+<p class="sub"><span id="count">0 photos</span> named. Type what the photo shows, tap Take photo, and it is saved under that name.</p>
+
+<h2>1. What is this photo?</h2>
+<label for="name">Name</label>
+<input id="name" type="text" placeholder="Kitchen window 1" autocomplete="off" enterkeyhint="done">
+<div class="chips" id="presets"></div>
+<div class="chips" id="recent" aria-label="Recent names"></div>
+<div class="chips"><button class="ghost" id="next">Next number</button><button class="ghost" id="clear">Clear</button></div>
+
+<h2>2. Take it</h2>
+<div class="chips">
+  <button class="primary" id="take" disabled>Take photo</button>
+  <button id="pick" disabled>Choose from gallery</button>
+</div>
+<input id="cam" class="hidden" type="file" accept="image/*" capture="environment">
+<input id="gal" class="hidden" type="file" accept="image/*" multiple>
+<p id="hint" class="sub">Type a name to turn the buttons on.</p>
+<p id="note" role="status"></p>
+
+<h2>Your named photos</h2>
+<p id="empty" class="sub">Nothing yet.</p>
+<ul id="list"></ul>
+<div class="chips"><button id="all" class="hidden">Download all</button></div>
+
+<div class="box"><b>What the name applies to</b>The name belongs to this page's copy and to the file you download. It does not rename anything in your phone's gallery, and this page cannot write into the gallery by itself.</div>
+<div class="box"><b>Where photos are kept</b><span id="where">Checking whether this browser lets the page keep photos.</span></div>
+<p class="sub">Photos stay on your phone. Nothing is uploaded or measured by this page.</p>
+</main>
+<script>
+'use strict';
+const PRESETS = ['Window','Radiator','Door','Floor marker','Wide shot','Corner'];
+const BAD = /[\\/:*?"<>|\u0000-\u001f]/g;
+const TYPE_EXT = {'image/jpeg':'jpg','image/jpg':'jpg','image/png':'png','image/webp':'webp','image/heic':'heic','image/heif':'heif','image/gif':'gif','image/avif':'avif'};
+const cleanLabel = raw => raw.replace(BAD,' ').replace(/\s+/g,' ').trim().replace(/^\.+/,'').slice(0,80);
+const extFor = (type,name) => TYPE_EXT[type] || ((/\.([A-Za-z0-9]{2,5})$/.exec(name)||[])[1]||'jpg').toLowerCase();
+function uniqueName(label, ext, taken) {
+  const used = new Set(taken.map(n => n.toLowerCase())); const base = cleanLabel(label) || 'Photo';
+  let name = base + '.' + ext; for (let n = 2; used.has(name.toLowerCase()); n++) name = base + ' (' + n + ').' + ext; return name;
+}
+function nextLabel(label) { const b = cleanLabel(label); const m = /^(.*?)(\d+)$/.exec(b); return m ? m[1] + (Number(m[2]) + 1) : (b ? b + ' 2' : b); }
+
+// --- storage: IndexedDB if allowed, else memory only
+const DB='photolabel.v1', STORE='photos';
+function openDb(){ return new Promise((res,rej)=>{ if(!('indexedDB' in window)){rej(new Error('no idb'));return;} let r; try{ r=indexedDB.open(DB,1);}catch(e){rej(e);return;}
+  r.onupgradeneeded=()=>r.result.createObjectStore(STORE,{keyPath:'id'}); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); r.onblocked=()=>rej(new Error('blocked')); }); }
+function tx(mode, fn){ return openDb().then(db=>new Promise((res,rej)=>{ const t=db.transaction(STORE,mode); const q=fn(t.objectStore(STORE));
+  t.oncomplete=()=>{db.close();res(q.result);}; t.onerror=()=>{db.close();rej(t.error);}; t.onabort=()=>{db.close();rej(t.error);}; })); }
+const loadAll=()=>tx('readonly',s=>s.getAll()), putOne=p=>tx('readwrite',s=>s.put(p)), delOne=id=>tx('readwrite',s=>s.delete(id));
+
+const $ = id => document.getElementById(id);
+let items = [], mode = 'checking';
+const note = t => { $('note').textContent = t; };
+const clean = () => cleanLabel($('name').value);
+const LKEY = 'photolabel.pending';
+function sync() {
+  const on = clean().length > 0; $('take').disabled = !on; $('pick').disabled = !on; $('hint').classList.toggle('hidden', on);
+  $('next').disabled = !on; $('clear').disabled = !$('name').value;
+  try { localStorage.setItem(LKEY, $('name').value); } catch (e) {}
+}
+function setName(v){ $('name').value = v; sync(); }
+function chip(parent, text, cls, fn){ const b=document.createElement('button'); b.textContent=text; if(cls)b.className=cls; b.onclick=fn; parent.appendChild(b); }
+function renderChips(){
+  $('presets').replaceChildren(); PRESETS.forEach(p=>chip($('presets'),p,'',()=>{const c=clean(); setName(c? c+' '+p.toLowerCase() : p);}));
+  $('recent').replaceChildren(); Array.from(new Set(items.map(i=>i.label))).slice(0,6).forEach(r=>chip($('recent'),r,'ghost',()=>setName(r)));
+}
+function download(it){ const a=document.createElement('a'); a.href=it.url; a.download=it.filename; document.body.appendChild(a); a.click(); a.remove(); }
+function render(){
+  $('count').textContent = items.length + (items.length===1?' photo':' photos'); $('empty').classList.toggle('hidden', items.length>0); $('all').classList.toggle('hidden', items.length<2);
+  const ul=$('list'); ul.replaceChildren();
+  for (const it of items) {
+    const li=document.createElement('li'); li.className='row';
+    const img=document.createElement('img'); img.className='thumb'; img.src=it.url; img.alt=it.label;
+    const m=document.createElement('div'); m.className='meta'; const b=document.createElement('b'); b.textContent=it.label; const s=document.createElement('span'); s.textContent=it.filename+' · '+(it.size/1048576).toFixed(1)+' MB'; m.append(b,s);
+    const ac=document.createElement('div'); ac.className='actions';
+    chip(ac,'Download','',()=>download(it));
+    if (navigator.canShare) chip(ac,'Share','ghost',async()=>{ const f=new File([it.blob],it.filename,{type:it.type}); try{ if(navigator.canShare({files:[f]})) await navigator.share({files:[f],title:it.label}); else note('This browser cannot share that file. Use Download.'); }catch(e){} });
+    chip(ac,'Remove','ghost',()=>{ URL.revokeObjectURL(it.url); items=items.filter(x=>x.id!==it.id); if(mode==='device') delOne(it.id).catch(()=>note('Removed from the list, but the browser did not confirm deleting the stored copy.')); render(); renderChips(); });
+    li.append(img,m,ac); ul.appendChild(li);
+  }
+  $('where').textContent = mode==='device' ? 'Photos are kept in this browser on this device, not uploaded. Clearing the browser data would delete them, so download what you want to keep.' : mode==='memory' ? 'This browser would not let the page keep photos. They stay only while this page is open, so download them before leaving.' : 'Checking whether this browser lets the page keep photos.';
+}
+async function onFiles(files){
+  const list = Array.from(files||[]); if(!list.length) return;
+  const label = clean(); if(!label){ note('Type a name first, then choose the photo again.'); return; }
+  const added=[]; let failed=false;
+  for (const f of list) {
+    const filename = uniqueName(label, extFor(f.type,f.name), [...items,...added].map(i=>i.filename));
+    const rec={id:Date.now()+'-'+Math.random().toString(36).slice(2,8), label, filename, type:f.type||'image/jpeg', size:f.size, at:Date.now(), blob:f};
+    if (mode==='device') { try{ await putOne(rec);}catch(e){ failed=true; } }
+    added.push({...rec, url:URL.createObjectURL(f)});
+  }
+  items=[...added.reverse(),...items]; if(failed) mode='memory';
+  note(failed ? 'Saved on this page only. The browser refused to keep it, so download it before you leave.' : 'Added as "'+added[0].filename+'".');
+  render(); renderChips();
+}
+$('name').addEventListener('input', sync);
+$('next').onclick=()=>setName(nextLabel($('name').value));
+$('clear').onclick=()=>setName('');
+$('take').onclick=()=>$('cam').click(); $('pick').onclick=()=>$('gal').click();
+for (const id of ['cam','gal']) $(id).addEventListener('change', e=>{ const f=e.target.files; onFiles(f).then(()=>{ e.target.value=''; }); });
+$('all').onclick=()=>{ items.forEach((it,i)=>setTimeout(()=>download(it), i*600)); note('Downloading all. Your browser may ask to allow multiple downloads.'); };
+try { $('name').value = localStorage.getItem(LKEY) || ''; } catch (e) {}
+sync(); renderChips(); render();
+loadAll().then(rows=>{ items=rows.sort((a,b)=>b.at-a.at).map(r=>({...r,url:URL.createObjectURL(r.blob)})); mode='device'; render(); renderChips(); }).catch(()=>{ mode='memory'; render(); });
+</script>
+</body>
+</html>
